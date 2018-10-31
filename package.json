@@ -9,8 +9,10 @@
     "README.md"
   ],
   "scripts": {
-    "start": "babel-node dev/playground.js",
-    "format": "prettier --write \"src/**/*.js\""
+    "build": "rimraf lib && babel src -d lib",
+    "prepack": "npm run build",
+    "format": "prettier --write \"src/**/*.js\"",
+    "playground": "npm run build && cd dev && npm run start"
   },
   "repository": {
     "type": "git",

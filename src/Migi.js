@@ -1,91 +1,118 @@
 import { Client } from 'discord.js'
 
-export const MODULE_DATA = Symbol('module_data')
-export const LISTENER_DATA = Symbol('listener_data')
-const MIGI_DATA = Symbol('migi_data')
-
-export function getModuleData(module) {
-	return (typeof module === 'function' ? module : module.constructor)[
-		MODULE_DATA
-	]
-}
+const MIGI_DATA = Symbol('migi')
 
 export function isModule(instance) {
-	return !!(instance.constructor && instance.constructor[MODULE_DATA])
+	return !!(instance.constructor && instance.constructor[MIGI_DATA])
 }
 
-export function getListenerData(handler) {
-	return handler[LISTENER_DATA]
+export function getMigiData(obj) {
+	return obj[MIGI_DATA]
 }
 
 export default class Migi extends Client {
 	constructor({ discordOptions, root = process.cwd() } = {}) {
 		super(discordOptions)
-		this.root = root
+		this._root = root
 		this._modules = []
 	}
 
+	get root() {
+		return this._root
+	}
+
 	loadModule(ModuleConstructor) {
-		// public module data
-		ModuleConstructor[MODULE_DATA] = {
-			[MIGI_DATA]: { listeners: [], instance: null },
+		const migi = this
+
+		// init module data
+		const data = {
+			_listeners: [],
+			_instance: null,
+			_loading: true,
 			get listeners() {
-				return Object.freeze(this[MIGI_DATA].listeners.slice())
+				return Object.freeze(this._listeners.slice())
 			},
 			get instance() {
-				return this[MIGI_DATA].instance
+				return this._instance
+			},
+			get loaded() {
+				return !!this._instance
 			},
 			get name() {
 				return ModuleConstructor.name
+			},
+			get migi() {
+				return migi
 			}
 		}
+		ModuleConstructor[MIGI_DATA] = data
 
-		const moduleInstance = new ModuleConstructor(this)
-		ModuleConstructor[MODULE_DATA].instance = moduleInstance
+		const module = new ModuleConstructor(this)
+		data._loading = false
+		data._instance = module
 
-		this._modules.push(moduleInstance)
-		this.emit('moduleLoad', ModuleConstructor, moduleInstance)
+		// add module
+		this._modules.push(module)
+		this.emit('moduleLoad', module)
 
-		return moduleInstance
+		return module
 	}
 
 	unloadModule(module) {
 		if (!isModule(module) || !this.isModuleLoaded(module))
 			throw new Error('instance must a loaded module instance')
 
-		getModuleData(module)[MIGI_DATA].instance = null
+		const data = module.constructor[MIGI_DATA]
+		data._instance = null // set unloaded
 
+		// remove listeners
+		data._listeners.forEach(listener => {
+			const { event, _rawHandler } = listener[MIGI_DATA]
+			this.emit('listenerRemove', module, event, listener)
+			this.removeListener(event, _rawHandler)
+		})
+
+		// remove module
 		this.emit('moduleUnload', module)
-		this._modules.remove(module)
+		this._modules.splice(this._modules.indexOf(module), 1)
 	}
 
 	listen(module, event, listener) {
-		if (!isModule(module) || !this.isModuleLoaded(module))
-			throw new Error('module must be a loaded module instance')
+		if (!isModule(module))
+			throw new Error('module must be a module instance')
 		if (typeof event !== 'string') throw new Error('event must be a string')
 		if (typeof listener !== 'function')
 			throw new Error('listener must be a function')
 
-		// public handler data
-		listener[LISTENER_DATA] = {
+		// allow adding in constructor
+		const data = module.constructor[MIGI_DATA]
+		if (!data._loading && !data._instance)
+			throw new Error('module must be a currently loading or loaded module instance')
+
+		// init listener data
+		const listData = {
+			_rawHandler: (...args) => listener.apply(module, args), // fix `this` arg
 			get module() {
 				return module
 			},
 			get event() {
 				return event
+			},
+			get handler() {
+				return listener
 			}
 		}
+		listener[MIGI_DATA] = listData
 
-		this.removeListener
-
-		getModuleData(module)[MIGI_DATA].listeners.push(listener)
-		this.emit('listenerAdd', listener)
-		this.on(event, listener)
+		// add listener
+		data._listeners.push(listener)
+		this.emit('listenerAdd', module, event, listener)
+		this.on(event, listData._rawHandler)
 	}
 
 	isModuleLoaded(module) {
 		if (!isModule(module)) throw new Error('module must be a module instance')
 
-		return !!getModuleData(module).instance
+		return !!module.constructor[MIGI_DATA].instance
 	}
 }
